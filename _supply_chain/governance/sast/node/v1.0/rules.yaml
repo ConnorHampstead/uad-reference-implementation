@@ -1,0 +1,11 @@
+rules:
+  - id: no-eval-with-input
+    patterns:
+      - pattern: eval($X)
+      - pattern-not: eval("...")
+    message: |
+      🚨 SECURITY VIOLATION (Policy v1.0)
+      Usage of 'eval()' with variables is strictly prohibited.
+      Remediation: Use JSON.parse() or a safer alternative.
+    languages: [javascript, typescript]
+    severity: ERROR

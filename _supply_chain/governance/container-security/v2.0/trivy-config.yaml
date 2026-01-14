@@ -1,0 +1,23 @@
+exit-code: 1
+format: table
+timeout: 10m
+
+# 1. SCANNER SELECTION
+# vuln: Standard CVEs
+# secret: Scans layers for hardcoded keys (AWS, Slack, etc)
+# misconfig: Scans Dockerfile config (enforces "USER" instruction)
+scanners:
+  - vuln
+  - secret
+  - misconfig
+
+# 2. SEVERITY THRESHOLD
+# We are stricter here: HIGH issues will also block the build.
+severity:
+  - HIGH
+  - CRITICAL
+
+# 3. NOISE REDUCTION
+# We still ignore unfixed CVEs, but Misconfigurations (like running as root)
+# are always considered "fixable" by the developer, so they will block.
+ignore-unfixed: true

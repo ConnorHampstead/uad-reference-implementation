@@ -1,0 +1,17 @@
+exit-code: 1
+format: table
+timeout: 10m
+
+# 1. SCANNER SELECTION
+# Only scan for vulnerabilities (CVEs)
+scanners:
+  - vuln
+
+# 2. SEVERITY THRESHOLD
+# Only fail on Critical
+severity:
+  - CRITICAL
+
+# 3. NOISE REDUCTION
+# If there is no patch available from the vendor, do not block the build.
+ignore-unfixed: true

@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-artifact:
+    # In a real scenario, this comes from another repo and we use a sha256 digest
+    # as the version pointer. We maybe also implement a PR bot that detects new tag
+    # versions and raises PRs with the latest SHAs.
+    uses: ConnorHampstead/uad-reference-implementation/.github/workflows/build-node-container-v1.yaml@v1
+
+    # In UAD, this is all the developer needs to worry themselves with. These flags
+    # are documented explicitly by the platform team delivering the CICD Assets
+    # (Layer 5 of the model). All the complexity of security is abstracted away
+    # without any surprises down the line.
+    # Alternatively, the dev team is happy to implement their own pipelines and the
+    # organisation at large is happy with this pattern. As long as it is immutable
+    # within the Asset, it does not violate UAD.
+    with:
+      node-version: "22"
+      sast-policy-version: "v2.0"
+      container-scan-policy-version: "v1.0"
+      working-directory: "./src"

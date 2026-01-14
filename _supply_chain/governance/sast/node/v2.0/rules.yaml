@@ -1,0 +1,9 @@
+rules:
+  - id: no-sync-functions
+    pattern: fs.readFileSync(...)
+    message: |
+      🚨 PERFORMANCE VIOLATION (Policy v2.0)
+      Synchronous I/O blocks the Node.js event loop.
+      Remediation: Use 'fs.promises.readFile'.
+    languages: [javascript, typescript]
+    severity: ERROR

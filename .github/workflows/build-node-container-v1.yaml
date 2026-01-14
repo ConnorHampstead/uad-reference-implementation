@@ -1,0 +1,198 @@
+name: "Node.js Service Golden Path (v1.0)"
+
+on:
+  workflow_call:
+    inputs:
+      sast-policy-version: 
+        description: "Version of SAST rules to use (e.g., v1.0, v2.0)"
+        type: string
+        required: true
+      container-scan-policy-version:
+        description: "Version of Container Security Policy to use (e.g., v1.0, v2.0)"
+        type: string
+        required: true
+      node-version:
+        description: "Version of Node.js to use. Allowed versions are 20, 22, and 24."
+        required: true
+        type: string
+      working-directory:
+        description: "The directory containing package.json (e.g. ./src)"
+        required: false
+        default: "."
+        type: string
+
+jobs:
+  setup-environment:
+  # GitHub will change this weekly~ so we force our pipeline steps to run within specific docker images 
+  # where possible to reduce mutability to absolute minimum. Alternative here would be to host your own 
+  # runner and have versioned updates (server functions as an Asset) but would likely get messy.
+    runs-on: ubuntu-22.04
+    outputs:
+      container_ref: ${{ steps.lookup.outputs.image }}
+    steps:
+      - name: Validate Node Version
+        id: lookup
+        shell: bash
+        run: |          
+          declare -A IMAGES
+          IMAGES["20"]="node@sha256:3ca3960b37879fd91a2863e757e79d2cb1bef159cbc4b44097ac3b2653e6d881" # Node 20.19.6 (Bullseye)
+          IMAGES["22"]="node@sha256:56394ceab84eb787f49e742ad19fbcfbf43f1b34572d2d8630784be597cc10f0" # Node 22.21.1 (Bullseye)
+          IMAGES["24"]="node@sha256:32bde4fc7635942cafb9681e5479a0ba4b2d53b279e44a67ba9303a71fecd706" # Node 24.12.0 (Bullseye)
+          
+          INPUT_VER="${{ inputs.node-version }}"
+          
+          # Check if key exists
+          if [[ -z "${IMAGES[$INPUT_VER]}" ]]; then
+            echo "❌ Error: Node version '$INPUT_VER' is not supported."
+            echo "   Supported versions: ${!IMAGES[@]}"
+            exit 1
+          fi
+          
+          SELECTED_IMAGE="${IMAGES[$INPUT_VER]}"
+          echo "✅ Resolved Node $INPUT_VER to $SELECTED_IMAGE"
+          
+          # Set the output variable
+          echo "image=$SELECTED_IMAGE" >> $GITHUB_OUTPUT
+
+  build-and-verify:
+    needs: setup-environment
+    runs-on: ubuntu-22.04
+    container: 
+      image: ${{ needs.setup-environment.outputs.container_ref }}
+    
+    steps:
+      - uses: actions/checkout@v3
+      - run: node --version # Will print exactly the version associated with that SHA
+      - run: npm ci
+        working-directory: ${{ inputs.working-directory }}
+      - run: npm test
+        working-directory: ${{ inputs.working-directory }}
+      - run: npm audit --prod
+        working-directory: ${{ inputs.working-directory }}
+  
+  sast-scan:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Node SAST Scan (Semgrep)
+        uses: ConnorHampstead/uad-reference-implementation/_supply_chain/actions/node-sast-gate/@v1
+        with:
+          governance-version: ${{ inputs.sast-policy-version }}
+          container-ref: "semgrep/semgrep@sha256:815298b52c3c125542208bc296a609db99cde7e53291a533196d4bddf08139ea"
+  
+  package-artifact:
+    needs: [build-and-verify, sast-scan]
+    runs-on: ubuntu-22.04
+    outputs:
+      artifact_name: "built-image"
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Build Image
+        run: docker build -t my-app:latest .
+
+      - name: Save Image to Tar
+        run: docker save -o my-app-image.tar my-app:latest
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-artifact
+          path: my-app-image.tar
+          retention-days: 1
+
+  container-security-gate:
+    needs: package-artifact
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+
+      # 1. DOWNLOAD (Fetch the artifact)
+      - name: Download Image
+        uses: actions/download-artifact@v4
+        with:
+          name: image-artifact
+          path: .
+
+      # 2. SCAN (The UAD Gate)
+      - name: Image Security Scan (Trivy)
+        uses: ConnorHampstead/uad-reference-implementation/_supply_chain/actions/container-scan-gate@v1
+        with:
+          image-path: "my-app-image.tar"
+          governance-version: ${{ inputs.container-scan-policy-version }}
+          container-ref: "aquasec/trivy@sha256:05d0126976bdedcd0782a0336f77832dbea1c81b9cc5e4b3a5ea5d2ec863aca7"
+
+          
+  # Job push to registry needs container-security-gate to run, and at this point gives it a proper name/tag.
+  # Not bothered to include this currently as it's beyond the scope of a UAD implementation anyway
+
+  # NOTE: In reality this would be a totally separate pipeline consumed as its own Asset
+  # but since we aren't adding a registry here I'm just going to simulate the deployment
+  # locally on the agent to prove the point.
+  deploy-to-prod:
+    needs: container-security-gate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-artifact
+          path: .
+
+      - name: Load Image & Get SHA
+        id: load-image
+        run: |
+          docker load -i my-app-image.tar
+          IMAGE_ID=$(docker inspect my-app:latest --format='{{.Id}}')
+          echo "sha=$IMAGE_ID" >> $GITHUB_OUTPUT
+
+      # 3. Infrastructure as Code
+      # Download of required modules from registry/github/whatever would go before this too.
+      - name: Terraform Init
+        working-directory: ./infra
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: ./infra
+        run: |
+          terraform apply -auto-approve \
+            -var="image_digest=${{ steps.load-image.outputs.sha }}"
+
+      # 4. Smoke Test
+      # This confirms Layer 2 (Infra) and Layer 1 (App) are working together.
+      - name: Verify Service Health
+        run: |
+          TIMEOUT=60
+          COUNT=0
+          
+          echo "🔍 Waiting for container 'uad-demo-app' to become healthy..."
+          
+          until [ "$STATUS" == "healthy" ]; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' uad-demo-app)
+            
+            if [ "$STATUS" == "unhealthy" ]; then
+              echo "❌ FAILURE: Container became unhealthy."
+              docker logs uad-demo-app
+              exit 1
+            fi
+            
+            if [ $COUNT -eq $TIMEOUT ]; then
+              echo "❌ TIMEOUT: Container stayed in '$STATUS' state for $TIMEOUT seconds."
+              docker logs uad-demo-app
+              exit 1
+            fi
+            
+            echo "Current Status: $STATUS ($COUNT/$TIMEOUT)..."
+            sleep 2
+            ((COUNT+=2))
+          done
+          
+          echo "✅ SUCCESS: Container is healthy."

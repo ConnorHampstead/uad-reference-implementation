@@ -1,0 +1,46 @@
+name: "Container Security Gate"
+description: "Scans a Docker image tarball using local Trivy policies."
+inputs:
+  image-path:
+    description: "Path to the docker image tarball (e.g. /tmp/image.tar)"
+    required: true
+  governance-version:
+    description: "Policy version to enforce (e.g. v1.0)"
+    required: true
+  container-ref:
+    description: "Container scanner image to use (e.g. aquasec/trivy@0.68.2)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Fetch Immutable Policy
+      shell: bash
+      run: |
+        BASE_DIR="${{ github.action_path }}/../../"
+        SOURCE="$BASE_DIR/governance/container-security/$GOVERNANCE_VERSION/trivy-config.yaml"
+        DEST="./trivy.yaml"
+
+        if [ ! -f "$SOURCE" ]; then
+          echo "❌ Policy version '$GOVERNANCE_VERSION' not found."
+          exit 1
+        fi
+        cp "$SOURCE" "$DEST"
+      env:
+        GOVERNANCE_VERSION: ${{ inputs.governance-version }}
+
+    - name: Run Trivy Scan
+      shell: bash
+      run: |        
+        # We run Trivy in 'image' mode but point it at the tarball (--input)
+        # We mount the current directory to access the tarball and the config
+        docker run --rm \
+          --volume "$(pwd):/src" \
+          "$CONTAINER_REF" \
+          image \
+          --config /src/trivy.yaml \
+          --input /src/$IMAGE_PATH
+      env:
+        TRIVY_CACHE_DIR: /tmp/.cache/trivy
+        CONTAINER_REF: ${{ inputs.container-ref }}
+        IMAGE_PATH: ${{ inputs.image-path }}

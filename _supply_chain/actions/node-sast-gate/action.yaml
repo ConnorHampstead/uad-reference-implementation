@@ -1,0 +1,42 @@
+name: "Node.js Security Gate"
+description: "Scans Node.js code using immutable Semgrep rules from the Supply Chain."
+inputs:
+  governance-version:
+    description: "The version of the rule pack to enforce (e.g., v1.0)"
+    required: true
+  container-ref:
+    description: "The name and version of the semgrep image to use (e.g., semgrep/semgrep:1.34.0)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Fetch Rules
+      shell: bash
+      run: |
+        # Define source and destination
+        # In a real scenario this would be downloaded from a registry
+        BASE_DIR="${{ github.action_path }}/../../"
+        SOURCE="$BASE_DIR/governance/sast/node/$GOVERNANCE_VERSION/rules.yaml"
+        DEST="./semgrep-rules.yaml"
+
+        if [ ! -f "$SOURCE" ]; then
+          echo "❌ Error: Policy version '$GOVERNANCE_VERSION' not found at $SOURCE"
+          exit 1
+        fi
+        
+        cp "$SOURCE" "$DEST"
+      env:
+        GOVERNANCE_VERSION: ${{ inputs.governance-version }}
+
+    - name: Run Semgrep
+      shell: bash
+      run: |
+        docker run --rm \
+          --env HOME=/tmp \
+          --user "$(id -u):$(id -g)" \
+          --volume "$(pwd):/src" \
+          "$CONTAINER_REF" \
+          semgrep scan --config /src/semgrep-rules.yaml --error --verbose
+      env:
+        CONTAINER_REF: ${{ inputs.container-ref }}
